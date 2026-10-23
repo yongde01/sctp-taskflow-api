@@ -8,8 +8,6 @@ import java.time.LocalDate;
 @Table(name = "tasks")
 @Getter
 @Setter
-@NoArgsConstructor
-@AllArgsConstructor
 public class Task {
 
     @Id
@@ -26,5 +24,19 @@ public class Task {
     private LocalDate dueDate;
 
     @Column(nullable = false)
-    private Boolean completed = false;
+    private Boolean completed;
+
+    public Task() {
+        this.completed = false;
+    }
+
+    public Task(Long id, String title, String description, String priority,
+                LocalDate dueDate, Boolean completed) {
+        this.id = id;
+        this.title = title;
+        this.description = description;
+        this.priority = priority;
+        this.dueDate = dueDate;
+        this.completed = completed;
+    }
 }

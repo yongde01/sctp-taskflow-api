@@ -1,0 +1,208 @@
+name: build_test_publish
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # ==========================================
+  # BUILD JOB - Compile and package
+  # ==========================================
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.version.outputs.image_tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21 and cache Maven dependencies
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Extract project version
+        id: version
+        run: |
+          APP_VER=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TAG="${APP_VER}-${SHORT_SHA}"
+          echo "Generated Image Tag: ${TAG}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies and build
+        run: mvn clean install -DskipTests
+
+      - name: Save JAR for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  # ==========================================
+  # TEST JOB - Run automated tests
+  # ==========================================
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21 and cache Maven dependencies
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run tests
+        run: mvn test
+
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: target/surefire-reports
+
+  # ==========================================
+  # SECURITY JOB - Scan for vulnerabilities
+  # ==========================================
+  security:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21 and cache Maven dependencies
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Get JAR from build job
+        uses: actions/download-artifact@v8
+        with:
+          name: app-jar
+          path: target
+
+      # --- 1. Snyk dependency scan ---
+      - name: Snyk dependency scan
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk-deps.sarif
+        continue-on-error: true
+
+      - name: Upload Snyk dependency results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-deps.sarif
+          category: snyk-dependencies
+
+      # --- 2. Snyk Docker image scan ---
+      - name: Build Docker image for scanning
+        run: docker build -t taskflowapi:scan .
+
+      - name: Snyk Docker image scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: taskflowapi:scan
+          args: --severity-threshold=high --sarif-file-output=snyk-docker.sarif
+        continue-on-error: true
+
+      - name: Upload Snyk Docker results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-docker.sarif
+          category: snyk-docker
+
+      # --- 3. CodeQL SAST ---
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Build for CodeQL
+        run: mvn clean package -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:java"
+
+  # ==========================================
+  # PUBLISH JOB - Build and push Docker image
+  # ==========================================
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build, test, security]
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Get JAR from the build job
+        uses: actions/download-artifact@v8
+        with:
+          name: app-jar
+          path: target
+
+      - name: Log in to Docker Hub
+        run: |
+          echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_NAME="$DOCKER_USERNAME/sctp-taskflowapi"
+          docker build -t "$IMAGE_NAME:${IMAGE_TAG}" .
+          docker push "$IMAGE_NAME:${IMAGE_TAG}"
+
+      - name: Wait for image to propagate on Docker Hub
+        run: sleep 15
+
+      - name: Deploy versioned image to Railway
+        run: |
+          TARGET_IMAGE="$DOCKER_USERNAME/sctp-taskflowapi:$IMAGE_TAG"
+          echo "Deploying: ${TARGET_IMAGE}"
+
+          UPDATE_RESPONSE=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
+            -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"mutation { serviceInstanceUpdate(serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\", input: { source: { image: \\\"$TARGET_IMAGE\\\" } }) }\"}")
+          echo "Update response: $UPDATE_RESPONSE"
+          if echo "$UPDATE_RESPONSE" | grep -q "errors"; then
+            echo "serviceInstanceUpdate failed"
+            exit 1
+          fi
+
+          DEPLOY_RESPONSE=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
+            -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"mutation { serviceInstanceDeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\") }\"}")
+          echo "Deploy response: $DEPLOY_RESPONSE"
+          if echo "$DEPLOY_RESPONSE" | grep -q "errors"; then
+            echo "serviceInstanceDeploy failed"
+            exit 1
+          fi
+          echo "Railway deploy triggered successfully"
