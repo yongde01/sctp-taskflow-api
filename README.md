@@ -34,21 +34,40 @@ Your live Railway URL returning task data (in your browser or terminal).
 If you didn't complete every task, list what you completed, what went wrong, and the error messages you saw. If everything worked, write "None".
 
 ```
-Completed: Task 1, Task 2
-
-Error at Task 3:
-<paste the error message here>
+None
 ```
 
 ### Stretch goal (optional)
 
 Which stretch goal you chose (if any), what you built, and any links (for example, your frontend URL, CI pipeline run or Docker Hub tags).
 
-```
-Stretch goal: <option number and name, or "None">
-Links: <https://...>
-Notes: <what you built and anything that didn't work>
-```
+**Option 1 – CI Pipeline (GitHub Actions)**
+
+Every push to `main` triggers a pipeline that builds, tests, and publishes the Docker image to Docker Hub.
+
+- Successful pipeline run: https://github.com/yongde01/sctp-taskflow-api/actions
+- Docker Hub image: https://hub.docker.com/r/yongde/sctp-taskflowapi
+
+**Option 2 – Frontend on Netlify**
+
+A static HTML/JS client deployed to Netlify that calls the Railway API to list, create, and look up tasks. CORS is configured in Spring Security (`SecurityConfig.java`) to allow requests from the Netlify domain.
+
+- Netlify frontend URL: https://steady-speculoos-a567c4.netlify.app
+
+**Option 4 – Versioned Docker Images**
+
+Images are tagged with `MAJOR.MINOR.PATCH-<short SHA>` (e.g. `0.0.3-4547c1a`) generated automatically in CI from the `pom.xml` version and the Git commit SHA. The CI pipeline pushes the versioned tag to Docker Hub and then deploys it to Railway via the Railway GraphQL API.
+
+- Docker Hub tags: https://hub.docker.com/r/yongde/sctp-taskflowapi/tags
+
+**Option 5 – Security Checks**
+
+Security scanning runs as a dedicated `security` job in CI before the image is published:
+
+- **Snyk** scans Maven dependencies and the built Docker image for HIGH/CRITICAL CVEs
+- **CodeQL** performs static analysis (SAST) on the Java source code
+- Results are uploaded to the GitHub Security tab as SARIF reports
+- No secrets are committed to the repository; all credentials (Docker Hub, Railway, Snyk) are stored as GitHub Actions secrets
 
 ## Getting started
 
