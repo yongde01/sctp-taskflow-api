@@ -29,6 +29,12 @@ Your live Railway URL returning task data (in your browser or terminal).
 
 ![Live application](screenshots/application.png)
 
+### Screenshot: Client application
+
+Your live Client URL showing task data (in your browser or terminal).
+
+![Live application](screenshots/client.png)
+
 ### Errors and failures
 
 If you didn't complete every task, list what you completed, what went wrong, and the error messages you saw. If everything worked, write "None".
